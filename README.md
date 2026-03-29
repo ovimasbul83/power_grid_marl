@@ -82,5 +82,4 @@ Step disturbance: +20% load injected at t=1s on generator 0.
 │   └── utils.py         # disturbance_test, plots
 ├── train.py
 ├── evaluate.py
-└── power_grid_marl_(2).ipynb
 ```
