@@ -2,7 +2,7 @@
 
 MAPPO + GNN replacing classical Droop/PI/AGC controllers. Each generator is a decentralised agent communicating over the grid topology via message passing.
 
-![Step disturbance response](assets/results.png)
+
 
 ---
 
