@@ -8,6 +8,8 @@ class PowerGridEnv(gym.Env):
     def __init__(self, n_generators=4, dt=0.01, max_steps=500,
                  topology='ring', disturbance_std=0.05, seed=None):
         super().__init__()
+        if topology == 'ieee14': n_generators = 5
+        if topology == 'ieee30': n_generators = 6
         self.n_generators = n_generators
         self.dt = dt
         self.max_steps = max_steps
@@ -26,24 +28,50 @@ class PowerGridEnv(gym.Env):
         self.rng = np.random.default_rng(seed)
 
     def _build_susceptance(self, topology, n):
+        if topology == 'ieee14':
+            return self._build_ieee14()
+        if topology == 'ieee30':
+            return self._build_ieee30()
         B = np.zeros((n, n)); b = 5.0
         if topology == 'ring':
-            for i in range(n): j = (i+1)%n; B[i,j]=b; B[j,i]=b
+            for i in range(n): j=(i+1)%n; B[i,j]=b; B[j,i]=b
         elif topology == 'mesh':
             for i in range(n):
-                for j in range(i+1, n): B[i,j]=b; B[j,i]=b
+                for j in range(i+1,n): B[i,j]=b; B[j,i]=b
         elif topology == 'star':
-            for i in range(1, n): B[0,i]=b; B[i,0]=b
+            for i in range(1,n): B[0,i]=b; B[i,0]=b
+        for i in range(n): B[i,i]=-np.sum(B[i,:])
+        return B
+
+    def _build_ieee14(self):
+        n = 5
+        B = np.zeros((n, n))
+        edges = [
+            (0, 1, 17.36),   (0, 2,  5.88),   (1, 2,  5.13),
+            (1, 3,  3.01),   (2, 3,  2.09),   (3, 4,  4.48),
+            (1, 4,  1.97),   (0, 3,  1.54),
+        ]
+        for i, j, b in edges:
+            B[i,j] += b; B[j,i] += b
+        for i in range(n): B[i,i] = -np.sum(B[i,:])
+        return B
+
+    def _build_ieee30(self):
+        n = 6
+        B = np.zeros((n, n))
+        edges = [
+            (0, 1, 16.90),   (0, 2,  5.59),   (1, 2,  6.12),
+            (1, 3,  3.37),   (2, 3,  4.21),   (2, 4,  2.78),
+            (3, 4,  3.55),   (4, 5,  4.90),   (2, 5,  2.15),
+            (0, 3,  1.88),   (1, 4,  1.63),   (3, 5,  2.44),
+        ]
+        for i, j, b in edges:
+            B[i,j] += b; B[j,i] += b
         for i in range(n): B[i,i] = -np.sum(B[i,:])
         return B
 
     def _compute_Pe(self):
-        Pe = np.zeros(self.n_generators)
-        for i in range(self.n_generators):
-            for j in range(self.n_generators):
-                if i != j and self.B[i,j] != 0:
-                    Pe[i] += self.B[i,j] * (self.delta[i] - self.delta[j])
-        return Pe
+        return -self.B @ self.delta
 
     def _get_obs(self):
         return np.stack([self.omega, self.delta, self.Pe,
@@ -80,14 +108,7 @@ class PowerGridEnv(gym.Env):
         dw = (1/self.M) * (self.Pm - self.Pe - self.D*self.omega - self.load_dist)
         self.omega = np.clip(self.omega + self.dt*dw, -2.0, 2.0)
         self.delta = np.clip(self.delta + self.dt*w0*self.omega, -np.pi, np.pi)
-        rewards = (
-            -1.0 * np.abs(self.omega)
-            -0.5 * np.abs(np.mean(self.omega))
-            -0.01 * np.abs(actions) / 0.1
-            -0.1  * np.abs(self.Pm - self.P_nom)
-        )
-        if self.step_count + 1 >= self.max_steps:
-            rewards -= 2.0 * np.mean(np.abs(self.omega))
+        rewards = -np.abs(self.omega)/2.0 - 0.05*np.abs(actions)/0.1
         self.step_count += 1
         info = {'mean_freq_dev': np.mean(np.abs(self.omega)),
                 'max_freq_dev':  np.max(np.abs(self.omega))}

@@ -16,8 +16,11 @@ def disturbance_test(controller, env, dist_step=100, dist_mag=0.2,
                      n_steps=500, is_policy=False, device='cpu'):
     obs, _ = env.reset()
     omega_h, pm_h = [], []
+    dist_injected = False
     for t in range(n_steps):
-        if t == dist_step: env.load_dist[0] += dist_mag
+        if t == dist_step and not dist_injected:
+            env.load_dist[0] += dist_mag
+            dist_injected = True
         if is_policy:
             obs_t = torch.FloatTensor(obs).to(device)
             with torch.no_grad():

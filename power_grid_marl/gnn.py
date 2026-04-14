@@ -36,13 +36,14 @@ class GATLayer(nn.Module):
         src, dst = edge_index[0], edge_index[1]
         e = self.lrelu(self.attn(torch.cat([Wh[src], Wh[dst]], dim=-1))).squeeze(-1)
         exp_e = torch.exp(e - e.max())
-        denom = torch.zeros(N, self.nh, device=x.device).index_add_(0, dst, exp_e)
+        denom = torch.zeros(N, self.nh, device=x.device)
+        denom.index_add_(0, dst, exp_e)
         alpha = exp_e / (denom[dst] + 1e-8)
         if edge_weights is not None:
             alpha = alpha * edge_weights.unsqueeze(-1)
+        msgs = (alpha.unsqueeze(-1) * Wh[src])
         out = torch.zeros(N, self.nh, self.hd, device=x.device)
-        for h in range(self.nh):
-            out[:,h].index_add_(0, dst, alpha[:,h:h+1] * Wh[src,h,:])
+        out.index_add_(0, dst, msgs)
         return F.relu(self.norm(out.view(N, -1)))
 
 
@@ -63,8 +64,7 @@ class DynamicGraphBuilder(nn.Module):
         weights = torch.softmax(scores, dim=-1)
         k = min(self.top_k, n-1)
         tv, ti = torch.topk(weights, k, dim=-1)
-        sl, dl, wl = [], [], []
-        for i in range(n):
-            for ki in range(k):
-                sl.append(i); dl.append(ti[i,ki].item()); wl.append(tv[i,ki])
-        return torch.tensor([sl, dl], dtype=torch.long, device=h.device), torch.stack(wl)
+        src = torch.arange(n, device=h.device).unsqueeze(1).expand(-1, k).reshape(-1)
+        dst = ti.reshape(-1)
+        ew = tv.reshape(-1)
+        return torch.stack([src, dst], dim=0), ew

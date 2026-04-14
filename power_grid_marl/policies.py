@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
+import numpy as np
 
 from .gnn import GCNLayer, GATLayer, DynamicGraphBuilder
 
@@ -70,22 +71,43 @@ class GNNPolicy(nn.Module):
         self.critic    = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim), nn.LayerNorm(hidden_dim),
             nn.ReLU(), nn.Linear(hidden_dim, 1))
+        self.graph_alpha = 0.0
 
-    def _gnn_forward(self, h):
-        B = h.shape[0] // self.n_agents
-        h_graph = h.view(B, self.n_agents, -1); out = []
-        for b in range(B):
-            hb = h_graph[b]
-            ei, ew = (self.dyn_graph(hb) if self.model == 'dynamic'
-                      else (self.grid_adj.to(hb.device), None))
-            for gnn in self.gnns: hb = gnn(hb, ei, ew)
-            out.append(hb)
-        return torch.stack(out).view(B * self.n_agents, -1)
+    def set_graph_alpha(self, alpha):
+        self.graph_alpha = float(np.clip(alpha, 0.0, 1.0))
+
+    def _get_graph(self, hb):
+        if self.model != 'dynamic':
+            return self.grid_adj.to(hb.device), None
+        if self.graph_alpha < 1.0:
+            return self.grid_adj.to(hb.device), None
+        dyn_ei, dyn_ew = self.dyn_graph(hb)
+        return dyn_ei, dyn_ew
+
+    def _batch_graph(self, ha, B):
+        N = self.n_agents
+        if self.model != 'dynamic' or self.graph_alpha < 1.0:
+            ei = self.grid_adj.to(ha.device)
+            offsets = torch.arange(B, device=ha.device) * N
+            ei_batch = (ei.unsqueeze(0) + offsets.view(B,1,1)).view(2,-1)
+            return ei_batch, None
+        else:
+            h_graph = ha.view(B, N, -1)
+            ei_list, ew_list = [], []
+            for b in range(B):
+                ei, ew = self.dyn_graph(h_graph[b])
+                ei_list.append(ei + b * N)
+                ew_list.append(ew)
+            return torch.cat(ei_list, dim=1), torch.cat(ew_list)
 
     def forward(self, obs, use_graph=False):
-        ha  = F.relu(self.actor_encoder(obs))
-        hc  = F.relu(self.critic_encoder(obs))
-        if use_graph: ha = self._gnn_forward(ha)
+        ha = F.relu(self.actor_encoder(obs))
+        hc = F.relu(self.critic_encoder(obs))
+        if use_graph:
+            B = obs.shape[0] // self.n_agents
+            ei, ew = self._batch_graph(ha, B)
+            for gnn in self.gnns:
+                ha = gnn(ha, ei, ew)
         mu  = self.actor_mu(ha) * 0.1
         std = self.actor_std.clamp(LOG_STD_MIN, LOG_STD_MAX).exp().expand_as(mu)
         return mu, std, self.critic(hc).squeeze(-1)
@@ -98,7 +120,11 @@ class GNNPolicy(nn.Module):
 
     def evaluate(self, obs, actions):
         ha = F.relu(self.actor_encoder(obs))
-        if obs.shape[0] % self.n_agents == 0: ha = self._gnn_forward(ha)
+        if obs.shape[0] % self.n_agents == 0:
+            B = obs.shape[0] // self.n_agents
+            ei, ew = self._batch_graph(ha, B)
+            for gnn in self.gnns:
+                ha = gnn(ha, ei, ew)
         mu  = self.actor_mu(ha) * 0.1
         std = self.actor_std.clamp(LOG_STD_MIN, LOG_STD_MAX).exp().expand_as(mu)
         d   = Normal(mu, std)
@@ -106,5 +132,4 @@ class GNNPolicy(nn.Module):
 
     def evaluate_critic(self, obs):
         hc = F.relu(self.critic_encoder(obs))
-        if obs.shape[0] % self.n_agents == 0: hc = self._gnn_forward(hc)
         return self.critic(hc).squeeze(-1)
